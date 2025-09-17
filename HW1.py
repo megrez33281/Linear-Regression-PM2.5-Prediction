@@ -71,13 +71,13 @@ def generate_features_from_samples(X_original, core_features):
     n_hours = X_original.shape[1]
 
     # 生成特徵名稱
-    original_names = [f"h{h}_{feat}" for h in range(n_hours) for feat in core_features]
-    squared_names = [f"h{h}_{feat}_sq" for h in range(n_hours) for feat in core_features]
+    original_names = [f"h{h}-{feat}" for h in range(n_hours) for feat in core_features]
+    squared_names = [f"h{h}-{feat}-sq" for h in range(n_hours) for feat in core_features]
     interaction_names = []
     
     for h in range(n_hours):
             for i, j in combinations(range(len(core_features)), 2):
-                interaction_names.append(f"h{h}_{core_features[i]}_x_{core_features[j]}")
+                interaction_names.append(f"h{h}-{core_features[i]}-x-{core_features[j]}")
 
     candidate_feature_names = original_names + squared_names + interaction_names
 
@@ -126,7 +126,7 @@ def generate_candidate_features(raw_df, core_features):
     return X_candidate, y , candidate_feature_names
 
 
-def select_features_with_lasso(X_candidate, y_candidate, alpha=0.1):
+def select_features_with_lasso(X_candidate, y_candidate, alpha, learning_rate):
     """
     用Lasso模型從候選特徵池中篩選特徵。
     """
@@ -148,7 +148,7 @@ def select_features_with_lasso(X_candidate, y_candidate, alpha=0.1):
     lasso_model = NumpyLinearRegression(
         n_features=X_b.shape[1], 
         epochs=2000, 
-        learning_rate=0.1, 
+        learning_rate= learning_rate, 
         lambda_strength=alpha, 
         norm='L1'  # 指定使用L1正規化
     )
@@ -166,7 +166,7 @@ class NumpyLinearRegression:
     """
     僅使用Numpy實現的線性迴歸模型，可選L1/L2正規化
     """
-    def __init__(self, n_features, learning_rate=0.1, epochs=1000, lambda_strength=0.01, norm='L2'):
+    def __init__(self, n_features, learning_rate=0.5, epochs=2000, lambda_strength=0.01, norm='L2'):
         """
         初始化模型參數。
         Args:
@@ -289,22 +289,22 @@ def predict_from_test_file(test_file_path, core_features, all_feature_names):
     final_feature_names = np.load('final_feature_names.npy') # 讀取配方
     final_feature_columns = []
     for feature_name in final_feature_names:
-        parts = feature_name.split('_')
+        parts = feature_name.split('-')
         hour = int(parts[0][1:]) # e.g., 'h0' -> 0
         
-        if 'sq' in parts: # 二次方項, e.g., 'h0_PM10_sq'
+        if 'sq' in parts: # 二次方項, e.g., 'h0-PM10-sq'
             feat_name = parts[1]
             feat_idx = core_feature_indices[feat_name]
             col = X_original_test[:, hour, feat_idx] ** 2
             final_feature_columns.append(col)
-        elif 'x' in parts: # 交互項, e.g., 'h0_PM10_x_SO2'
+        elif 'x' in parts: # 交互項, e.g., 'h0-PM10-x-SO2'
             feat1_name = parts[1]
             feat2_name = parts[3]
             feat1_idx = core_feature_indices[feat1_name]
             feat2_idx = core_feature_indices[feat2_name]
             col = X_original_test[:, hour, feat1_idx] * X_original_test[:, hour, feat2_idx]
             final_feature_columns.append(col)
-        else: # 原始特徵, e.g., 'h0_PM10'
+        else: # 原始特徵, e.g., 'h0-PM10'
             feat_name = parts[1]
             feat_idx = core_feature_indices[feat_name]
             col = X_original_test[:, hour, feat_idx]
@@ -337,7 +337,7 @@ def run_data_size_experiment(X_full, y_full, X_val, y_val):
         y_train_subset = y_full[:n_train]
         
         # 重新訓練模型
-        model = NumpyLinearRegression(n_features=X_full.shape[1], epochs=1000, learning_rate=0.5, lambda_strength=0.001)
+        model = NumpyLinearRegression(n_features=X_full.shape[1], epochs=2000, learning_rate=0.5, lambda_strength=0.001)
         model.train(X_train_subset, y_train_subset)
         
         # 在固定的驗證集上評估RMSE
@@ -360,16 +360,21 @@ def run_data_size_experiment(X_full, y_full, X_val, y_val):
 def run_regularization_experiment(X_train, y_train, X_val, y_val):
     """比較不同L2正規化強度對模型準確度的影響"""
     print("\n--- 比較不同L2正規化強度對模型準確度的影響 ---")
+    best_rmse = -1
+    best_lambdas = 0
     lambdas = [0, 0.0001, 0.001, 0.01, 0.1, 1]
     rmses = []
     for l2 in lambdas:
         # 使用不同的lambda重新訓練模型
-        model = NumpyLinearRegression(n_features=X_train.shape[1], epochs=1000, learning_rate=0.5, lambda_strength=l2)
+        model = NumpyLinearRegression(n_features=X_train.shape[1], epochs=2000, learning_rate=0.5, lambda_strength=l2)
         model.train(X_train, y_train)
         
         # 在固定的驗證集上評估RMSE
         y_pred = model.predict(X_val)
         rmse = np.sqrt(np.mean((y_val.reshape(-1, 1) - y_pred)**2))
+        if best_rmse == -1 or rmse < best_rmse:
+            best_rmse = rmse
+            best_lambdas = l2
         rmses.append(rmse)
         print(f"Lambda (L2): {l2}, RMSE: {rmse:.4f}")
     
@@ -383,13 +388,39 @@ def run_regularization_experiment(X_train, y_train, X_val, y_val):
     plt.grid(True)
     plt.savefig('regularization_impact.png')
     print("regularization_impact.png 已保存。")
-    return rmses
+    return rmses, best_lambdas
 
 
 
 
 
 if __name__ == "__main__":
+
+    # 超參數
+    """
+    [0, 0.0001, 0.001, 0.01, 0.1, 1]
+    Lasso Learning Rate = 0.5 
+    alpha強度紀錄：(top_n = 8)
+        alpha   RMSE    最終特徵數量
+        0       4.4605  395
+        0.0001  4.4605  396
+        0.001   4.4605  396
+        0.01    4.4576 363
+        0.1     4.4617  384
+        1       4.4600  396
+    特徵數量沒有隨著alpha遞增嚴格遞減或者持平，沒有穩定收斂，嘗試降低Lasso Learning Rate至0.1
+
+    """
+    
+    # L1相關
+    alpha = 0.1 # 用lasso篩選參數組合時的lamba
+    top_n = 18 # 篩選的核心參數數量
+    Lasso_Learning_Rate = 0.0001 #  Lasso的Learning Rate（L1似乎容易過擬合，當採用越多的核心參數的時候，需要降低其Learning Rate）
+
+    experiment = False # 是否進行資料量影響與正規化影響實驗
+
+    # L2相關
+    best_lambdas = 0.01 # 正規化強度
 
     # ---資料清洗與前處理----
     print("---資料清洗與前處理---")
@@ -409,7 +440,7 @@ if __name__ == "__main__":
     # ---特徵篩選---
     print("\n---特徵篩選---")
     # 識別核心特徵
-    core_features = select_core_features(clean_timeseries_df, top_n=8)
+    core_features = select_core_features(clean_timeseries_df, top_n=top_n)
     print(f"選出的核心特徵: {core_features}")
  
     # 生成候選特徵組合及其名稱配方
@@ -417,7 +448,7 @@ if __name__ == "__main__":
     print(f"生成的候選特徵池維度: {X_candidate.shape}")
 
     # Lasso特徵篩選
-    selected_indices = select_features_with_lasso(X_candidate, y_candidate, alpha=0.01)
+    selected_indices = select_features_with_lasso(X_candidate, y_candidate, alpha=alpha, learning_rate = Lasso_Learning_Rate)
     
     # 根據索引，建立並儲存最終的特徵組合配方
     final_feature_names = [candidate_feature_names[i] for i in selected_indices]
@@ -466,16 +497,17 @@ if __name__ == "__main__":
     
 
     # ---實驗：資料量影響與正規化影響---
-    # 資料量影響
-    data_size_results = run_data_size_experiment(X_train_b, y_train_full, X_val_b, y_val)
-    # 正規化影響
-    reg_results = run_regularization_experiment(X_train_b, y_train_full, X_val_b, y_val)
-    
+    if experiment:
+        # 資料量影響
+        data_size_results = run_data_size_experiment(X_train_b, y_train_full, X_val_b, y_val)
+        # 正規化影響
+        reg_results, best_lambdas = run_regularization_experiment(X_train_b, y_train_full, X_val_b, y_val)
+        
 
     # ---用選出的特徵組合訓練最終模型---
     print("\n--- 用選出的特徵組合訓練最終模型 ---")
     # 此處可根據實驗結果調整超參數，完成最終模型的訓練
-    final_model = NumpyLinearRegression(n_features=X_train_b.shape[1], epochs=2000, learning_rate=0.5, lambda_strength=0.01)
+    final_model = NumpyLinearRegression(n_features=X_train_b.shape[1], epochs=2000, learning_rate=0.5, lambda_strength = best_lambdas)
     train_rmses, val_rmses = final_model.train(X_train_b, y_train_full)
     # 保存訓練好的模型權重
     np.save('trained_model.npy', final_model.weights)
