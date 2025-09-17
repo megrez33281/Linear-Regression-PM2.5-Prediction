@@ -254,7 +254,7 @@ def predict_from_test_file(test_file_path, core_features, all_feature_names):
     讀取測試檔案，進行處理，並呼叫特徵生成器，最終做出預測。
     """
     # 讀取與初步清理測試資料
-    test_df_raw = pd.read_csv(test_file_path, header=None, encoding='et-8')
+    test_df_raw = pd.read_csv(test_file_path, header=None, encoding='utf-8')
     
     # 對每個樣本獨立進行內插
     n_samples = test_df_raw.shape[0] // 18
@@ -430,10 +430,23 @@ if __name__ == "__main__":
 
 
     # ---準備訓練集與驗證集----
+    # 由於text資料集的資料是每月的21號資料的預測，train資料集是20號前的，在分割的時候應以相似的方式切割
     # 按照80/20的比例切分資料
-    val_split = int(len(X_final) * 0.8)
-    X_train_full, y_train_full = X_final[:val_split], y_candidate[:val_split]
-    X_val, y_val = X_final[val_split:], y_candidate[val_split:]
+    X_train_full, y_train_full = [], []
+    X_val, y_val = [], []
+    for i in range(0, len(X_final)):
+        if i % 5 != 4:
+            X_train_full.append(X_final[i])
+            y_train_full.append(y_candidate[i])
+        else:
+            X_val.append(X_final[i])
+            y_val.append(y_candidate[i])
+
+    X_train_full = np.array(X_train_full)
+    y_train_full = np.array(y_train_full)
+    X_val = np.array(X_val)
+    y_val = np.array(y_val)
+
 
     # 標準化最終的特徵集
     train_mean = np.mean(X_train_full, axis=0)
