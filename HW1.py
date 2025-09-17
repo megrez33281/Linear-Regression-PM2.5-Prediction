@@ -253,14 +253,30 @@ def predict_from_test_file(test_file_path, core_features, all_feature_names):
     """
     讀取測試檔案，進行處理，並呼叫特徵生成器，最終做出預測。
     """
-    # 讀取與清理測試資料
-    test_df = pd.read_csv(test_file_path, header=None, encoding='big5')
-    test_df.iloc[:, 2:] = test_df.iloc[:, 2:].replace({'NR': 0, '#': '', '*': '', 'x': '', 'A': ''})
-    test_df.iloc[:, 2:] = test_df.iloc[:, 2:].apply(pd.to_numeric, errors='coerce').fillna(0)
+    # 讀取與初步清理測試資料
+    test_df_raw = pd.read_csv(test_file_path, header=None, encoding='et-8')
     
-    # 重塑與提取核心特徵
-    n_samples = test_df.shape[0] // 18
-    test_data = test_df.iloc[:, 2:].values.reshape(n_samples, 18, 9)
+    # 對每個樣本獨立進行內插
+    n_samples = test_df_raw.shape[0] // 18
+    processed_samples = []
+    for i in range(n_samples):
+        # 取出一個樣本的18個特徵
+        sample_df = test_df_raw.iloc[i*18 : (i+1)*18, 2:].copy() # 取出9小時的數值部分
+        
+        # 清理無效值並轉為NaN
+        sample_df.replace({'NR': 0, '#': '', '*': '', 'x': '', 'A': ''}, inplace=True)
+        numeric_df = sample_df.apply(pd.to_numeric, errors='coerce')
+        
+        # 進行水平內插 (axis=1)，填補每列（每個特徵）的9小時內的缺失值
+        numeric_df.interpolate(axis=1, inplace=True)
+
+        # 處理行首可能殘留的NaN
+        numeric_df.fillna(0, inplace=True)
+        
+        processed_samples.append(numeric_df.values)
+
+    # 將處理好的樣本列表轉換為一個大的Numpy array
+    test_data = np.array(processed_samples) # Shape: (n_samples, 18, 9)
     test_data = test_data.transpose(0, 2, 1)
     core_feature_indices = {name: i for i, name in enumerate(core_features)} # 建立名稱到索引的映射
     all_feature_indices = {name: i for i, name in enumerate(all_feature_names)}
