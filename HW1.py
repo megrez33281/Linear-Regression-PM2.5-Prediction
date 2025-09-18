@@ -70,41 +70,20 @@ def generate_features_from_samples(X_original, core_features):
     n_samples = X_original.shape[0]
     n_hours = X_original.shape[1]
 
-
-    original_names = [f"h{h}-{feat}" for h in range(n_hours) for feat in core_features]
-
-
-    # 用於組合特徵
-    """
     # 生成特徵名稱
+    original_names = [f"h{h}-{feat}" for h in range(n_hours) for feat in core_features]
     squared_names = [f"h{h}-{feat}-sq" for h in range(n_hours) for feat in core_features]
-    interaction_names = []
-    
-    for h in range(n_hours):
-            for i, j in combinations(range(len(core_features)), 2):
-                interaction_names.append(f"h{h}-{core_features[i]}-x-{core_features[j]}")
 
-    candidate_feature_names = original_names + squared_names + interaction_names
     # 1. 二次方項
     X_squared = X_original ** 2
-
-    # 2. 交互項 (兩兩相乘)
-    X_interaction = []
-    for i in range(n_samples):
-        sample_interaction_per_hour = []
-        for hour_slice in X_original[i]:
-            interaction_features = []
-            for f1, f2 in combinations(hour_slice, 2):
-                interaction_features.append(f1 * f2)
-            sample_interaction_per_hour.append(interaction_features)
-        X_interaction.append(sample_interaction_per_hour)
-    X_interaction = np.array(X_interaction)
-    """
+    
     # 將所有特徵攤平並組合
     X_original_flat = X_original.reshape(n_samples, -1)
-    # 只使用原始特徵
-    X_candidate = X_original_flat 
-    return X_candidate, original_names
+    X_squared_flat = X_squared.reshape(n_samples, -1)
+    
+    X_candidate = np.concatenate([X_original_flat, X_squared_flat], axis=1)
+    candidate_feature_names = original_names + squared_names
+    return X_candidate, candidate_feature_names
 
 
 def generate_candidate_features(raw_df, core_features):
