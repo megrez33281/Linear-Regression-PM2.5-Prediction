@@ -70,8 +70,13 @@ def generate_features_from_samples(X_original, core_features):
     n_samples = X_original.shape[0]
     n_hours = X_original.shape[1]
 
-    # 生成特徵名稱
+
     original_names = [f"h{h}-{feat}" for h in range(n_hours) for feat in core_features]
+
+
+    # 用於組合特徵
+    """
+    # 生成特徵名稱
     squared_names = [f"h{h}-{feat}-sq" for h in range(n_hours) for feat in core_features]
     interaction_names = []
     
@@ -80,10 +85,9 @@ def generate_features_from_samples(X_original, core_features):
                 interaction_names.append(f"h{h}-{core_features[i]}-x-{core_features[j]}")
 
     candidate_feature_names = original_names + squared_names + interaction_names
-
     # 1. 二次方項
     X_squared = X_original ** 2
-    
+
     # 2. 交互項 (兩兩相乘)
     X_interaction = []
     for i in range(n_samples):
@@ -95,35 +99,46 @@ def generate_features_from_samples(X_original, core_features):
             sample_interaction_per_hour.append(interaction_features)
         X_interaction.append(sample_interaction_per_hour)
     X_interaction = np.array(X_interaction)
-
+    """
     # 將所有特徵攤平並組合
     X_original_flat = X_original.reshape(n_samples, -1)
-    X_squared_flat = X_squared.reshape(n_samples, -1)
-    X_interaction_flat = X_interaction.reshape(n_samples, -1)
-    
-    X_candidate = np.concatenate([X_original_flat, X_squared_flat, X_interaction_flat], axis=1)
-    return X_candidate, candidate_feature_names
+    # 只使用原始特徵
+    X_candidate = X_original_flat 
+    return X_candidate, original_names
 
 
 def generate_candidate_features(raw_df, core_features):
     """
-    根據核心特徵，建立滑動窗口，並呼叫特徵生成器。
+    根據核心特徵，建立滑動窗口，並呼叫特徵生成器
+    **鑒於train data是每個月前20天的資料，需要注意不能讓Sliding Window產生跨月的情形**
     """
-    core_df = raw_df[core_features]
-    X_original, y = [], []
-
-    # 使用滑動窗口方式建立原始特徵樣本和目標值
-    for i in range(len(core_df) - 9):
-        X_original.append(core_df.iloc[i:i+9].values)
-        y.append(raw_df.iloc[i+9]['PM2.5'])
-    X_original = np.array(X_original)
-    y = np.array(y)
+    # 確保索引是datetime物件
+    if not isinstance(raw_df.index, pd.DatetimeIndex):
+        raw_df.index = pd.to_datetime(raw_df.index)
+        
+    # 從索引中提取月份信息
+    raw_df['Month'] = raw_df.index.month
     
+    all_X_original, all_y, all_timestamps = [], [], []
+
+    # 對每個月的數據獨立進行滑動窗口
+    for month, month_df in raw_df.groupby('Month'):
+        core_df_month = month_df[core_features]
+        # 在單一月份內部應用滑動窗口
+        if len(core_df_month) > 9:
+            for i in range(len(core_df_month) - 9):
+                all_X_original.append(core_df_month.iloc[i:i+9].values)
+                all_y.append(month_df.iloc[i+9]['PM2.5'])
+                all_timestamps.append(month_df.index[i+9]) # Add timestamp
+
+    X_original = np.array(all_X_original)
+    y = np.array(all_y)
+    timestamps = np.array(all_timestamps) # Create timestamps array
 
     # 呼叫共用函數來生成候選特徵和其名稱
     X_candidate, candidate_feature_names = generate_features_from_samples(X_original, core_features)
     
-    return X_candidate, y , candidate_feature_names
+    return X_candidate, y, candidate_feature_names, timestamps # Return timestamps
 
 
 def select_features_with_lasso(X_candidate, y_candidate, alpha, learning_rate):
@@ -413,14 +428,10 @@ if __name__ == "__main__":
     """
     
     # L1相關
-    alpha = 0.1 # 用lasso篩選參數組合時的lamba
-    top_n = 18 # 篩選的核心參數數量
-    Lasso_Learning_Rate = 0.0001 #  Lasso的Learning Rate（L1似乎容易過擬合，當採用越多的核心參數的時候，需要降低其Learning Rate）
-
+    alpha = 0.05 # 用lasso篩選參數組合時的lamba
+    Lasso_Learning_Rate = 0.01 #  Lasso的Learning Rate
     experiment = False # 是否進行資料量影響與正規化影響實驗
 
-    # L2相關
-    best_lambdas = 0.01 # 正規化強度
 
     # ---資料清洗與前處理----
     print("---資料清洗與前處理---")
@@ -439,12 +450,12 @@ if __name__ == "__main__":
     
     # ---特徵篩選---
     print("\n---特徵篩選---")
-    # 識別核心特徵
-    core_features = select_core_features(clean_timeseries_df, top_n=top_n)
-    print(f"選出的核心特徵: {core_features}")
+    # 根據建議，手動指定核心特徵
+    core_features = ['PM2.5', 'PM10', 'O3', 'CO']
+    print(f"指定的核心特徵: {core_features}")
  
     # 生成候選特徵組合及其名稱配方
-    X_candidate, y_candidate, candidate_feature_names = generate_candidate_features(clean_timeseries_df, core_features)
+    X_candidate, y_candidate, candidate_feature_names, timestamps = generate_candidate_features(clean_timeseries_df, core_features)
     print(f"生成的候選特徵池維度: {X_candidate.shape}")
 
     # Lasso特徵篩選
@@ -461,17 +472,20 @@ if __name__ == "__main__":
 
 
     # ---準備訓練集與驗證集----
-    # 由於text資料集的資料是每月的21號資料的預測，train資料集是20號前的，在分割的時候應以相似的方式切割
-    # 按照80/20的比例切分資料
+    # 採用90/10的時序驗證，更貼近train data與test data間的差異
     X_train_full, y_train_full = [], []
     X_val, y_val = [], []
-    for i in range(0, len(X_final)):
-        if i % 5 != 4:
-            X_train_full.append(X_final[i])
-            y_train_full.append(y_candidate[i])
-        else:
-            X_val.append(X_final[i])
-            y_val.append(y_candidate[i])
+    
+    # 從時間戳中獲取日期
+    days_of_month = pd.to_datetime(timestamps).day
+
+    # 切割訓練集與驗證集
+    split_point = int(len(X_final) * 0.9)
+    X_train_full = X_final[:split_point]
+    y_train_full = y_candidate[:split_point]
+    X_val = X_final[split_point:]
+    y_val = y_candidate[split_point:]
+    print(f"訓練集樣本數: {len(X_train_full)}, 驗證集樣本數: {len(X_val)}")
 
     X_train_full = np.array(X_train_full)
     y_train_full = np.array(y_train_full)
@@ -505,42 +519,32 @@ if __name__ == "__main__":
         
 
     # ---用選出的特徵組合訓練最終模型---
-    print("\n--- 用選出的特徵組合訓練最終模型 ---")
-    # 此處可根據實驗結果調整超參數，完成最終模型的訓練
-    final_model = NumpyLinearRegression(n_features=X_train_b.shape[1], epochs=2000, learning_rate=0.5, lambda_strength = best_lambdas)
-    train_rmses, val_rmses = final_model.train(X_train_b, y_train_full)
-    # 保存訓練好的模型權重
-    np.save('trained_model.npy', final_model.weights)
-    print("最終模型權重已保存。")   
+    print("\n--- L2最佳正規化參數搜索 ---")
+    lambda_values = [0.001, 0.01, 0.1]
+    best_final_rmse = float('inf')
+    best_final_lambda = None
 
+    for l2_lambda in lambda_values:
+        print(f"\n訓練模型，L2 Lambda = {l2_lambda}")
+        final_model = NumpyLinearRegression(n_features=X_train_b.shape[1], epochs=2000, learning_rate=0.5, lambda_strength=l2_lambda)
+        train_rmses, val_rmses = final_model.train(X_train_b, y_train_full)
+        
+        # 評估模型在驗證集上的表現
+        y_val_pred = final_model.predict(X_val_b)
+        final_val_rmse = np.sqrt(np.mean((y_val.reshape(-1, 1) - y_val_pred)**2))
+        print(f"L2 Lambda = {l2_lambda} 時，驗證集上的 RMSE: {final_val_rmse:.4f}")
 
-    # --- 評估最終模型在驗證集上的表現 ---
-    print("\n--- 評估最終模型在驗證集上的表現 ---")
-    # 使用訓練好的最終模型對驗證集進行預測
-    y_val_pred = final_model.predict(X_val_b)
-    
-    # 計算預測結果與真實標籤y_val之間的RMSE
-    final_val_rmse = np.sqrt(np.mean((y_val.reshape(-1, 1) - y_val_pred)**2))
-    # --- 繪製學習曲線圖 ---
-    epochs_range = range(10, final_model.epochs + 1, 10)
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs_range, train_rmses, marker='.', linestyle='-', label='Training RMSE')
-    plt.plot(epochs_range, val_rmses, marker='.', linestyle='-', label='Validation RMSE')
-    plt.title('Learning Curve: RMSE vs. Epochs')
-    plt.xlabel('Epochs')
-    plt.ylabel('RMSE')
-    plt.legend()
-    plt.grid(True)
-    plt.ylim(bottom=3.0) # 設定y軸下限，讓曲線變化更明顯
-    plt.savefig('learning_curve.png')
-    print("學習曲線圖 'learning_curve.png' 已成功生成。")
-    print(f"最終模型在 20% 驗證集上的 RMSE: {final_val_rmse:.4f}")
+        if final_val_rmse < best_final_rmse:
+            best_final_rmse = final_val_rmse
+            best_final_lambda = l2_lambda
+            # 保存最佳模型的權重
+            np.save('trained_model.npy', final_model.weights)
+            print(f"發現新的最佳模型，權重已保存至 trained_model.npy")
 
-
-
-
+    print(f"\n最佳正規化參數搜索完成，最佳 L2 Lambda: {best_final_lambda}, 最佳 RMSE: {best_final_rmse:.4f}")
 
     # ---讀取測試集，進行預測---
+    # 注意：預測時會自動加載 a trained_model.npy，這裡加載的是搜索中效果最好的那個
     predictions = predict_from_test_file('test.csv', core_features, all_feature_names)
     # 生成提交檔案
     submission_df = pd.DataFrame({'index': [f'index_{i}' for i in range(len(predictions))],
